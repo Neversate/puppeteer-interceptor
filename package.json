@@ -9,6 +9,7 @@
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build",
     "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts'",
+    "postinstall": "npm run build",
     "watch": "tsc -w",
     "test": "mocha"
   },
