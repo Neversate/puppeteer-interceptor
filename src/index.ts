@@ -131,6 +131,10 @@ export class InterceptionHandler {
           debug(
             `Warning: onResponseReceived handler passed but ${requestId} intercepted at Request stage. Handler can not be called.`,
           );
+        } else if (event.responseStatusCode != 200) {
+           debug(
+             `Warning: onResponseReceived handler passed but status code of response was ${event.responseStatusCode}. Not handling response.`,
+           );
         } else {
           const responseCdp = (await client.send('Fetch.getResponseBody', {
             requestId,
