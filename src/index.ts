@@ -157,7 +157,7 @@ export class InterceptionHandler {
           responseHeaders: newResponse.headers,
           body: newResponse.base64Body ? newResponse.base64Body : btoa(newResponse.body),
           responsePhrase: newResponse.statusMessage,
-        });
+        }).catch(e => null);
       } else {
         await client.send('Fetch.continueRequest', { requestId });
       }
