@@ -75,92 +75,96 @@ export class InterceptionHandler {
   async initialize() {
     const client = await this.page.target().createCDPSession();
     await client.send('Fetch.enable', { patterns: this.patterns });
-    client.on('Fetch.requestPaused', async (event: Protocol.Fetch.RequestPausedEvent) => {
-      const { requestId, request } = event;
+    client.on('Fetch.requestPaused', (event: Protocol.Fetch.RequestPausedEvent) => {
+      const execute = async () => {
+        const { requestId, request } = event;
 
-      if (this.disabled) {
-        debug(`Interception handler disabled, continuing request.`);
-        await client.send('Fetch.continueRequest', { requestId });
-        return;
-      }
-
-      debug(`Request ${event.request.url} (${requestId}) paused.`);
-
-      if (this.eventHandlers.onInterception) {
-        let errorReason: Protocol.Network.ErrorReason = 'Aborted';
-        let shouldContinue = true;
-        let fulfill: undefined | (() => Promise<void>) = undefined;
-        const control = {
-          abort: (msg: Protocol.Network.ErrorReason) => {
-            shouldContinue = false;
-            errorReason = msg;
-          },
-          fulfill: (responseCode: number, responseOptions?: Interceptor.ResponseOptions): void => {
-            const fulfillOptions: Protocol.Fetch.FulfillRequestRequest = {
-              requestId,
-              responseCode,
-            };
-            if (responseOptions) {
-              const keys = ['body', 'binaryResponseHeaders', 'responseHeaders', 'responsePhrase'];
-              Object.assign(fulfillOptions, pick(responseOptions, keys));
-              if (fulfillOptions.body) fulfillOptions.body = btoa(fulfillOptions.body);
-              if (responseOptions.encodedBody) fulfillOptions.body = responseOptions.encodedBody;
-            }
-            fulfill = async () => {
-              debug(`Fulfilling request ${requestId} with responseCode "${responseCode}"`);
-              await client.send('Fetch.fulfillRequest', fulfillOptions);
-            };
-          },
-        };
-
-        await this.eventHandlers.onInterception(event, control);
-        if (!shouldContinue) {
-          debug(`Aborting request ${requestId} with reason "${errorReason}"`);
-          await client.send('Fetch.failRequest', { requestId, errorReason });
-          return;
-        } else if (fulfill) {
-          await fulfill!();
+        if (this.disabled) {
+          debug(`Interception handler disabled, continuing request.`);
+          await client.send('Fetch.continueRequest', { requestId });
           return;
         }
-      }
 
-      let newResponse = null;
+        debug(`Request ${event.request.url} (${requestId}) paused.`);
 
-      if (this.eventHandlers.onResponseReceived) {
-        if (!event.responseStatusCode) {
-          debug(
-            `Warning: onResponseReceived handler passed but ${requestId} intercepted at Request stage. Handler can not be called.`,
-          );
-        } else if (event.responseStatusCode != 200) {
-           debug(
-             `Warning: onResponseReceived handler passed but status code of response was ${event.responseStatusCode}. Not handling response.`,
-           );
-        } else {
-          const responseCdp = (await client.send('Fetch.getResponseBody', {
-            requestId,
-          })) as Protocol.Fetch.GetResponseBodyResponse;
-          const response: Interceptor.InterceptedResponse = {
-            body: responseCdp.base64Encoded ? atob(responseCdp.body) : responseCdp.body,
-            headers: event.responseHeaders,
-            errorReason: event.responseErrorReason,
-            statusCode: event.responseStatusCode,
+        if (this.eventHandlers.onInterception) {
+          let errorReason: Protocol.Network.ErrorReason = 'Aborted';
+          let shouldContinue = true;
+          let fulfill: undefined | (() => Promise<void>) = undefined;
+          const control = {
+            abort: (msg: Protocol.Network.ErrorReason) => {
+              shouldContinue = false;
+              errorReason = msg;
+            },
+            fulfill: (responseCode: number, responseOptions?: Interceptor.ResponseOptions): void => {
+              const fulfillOptions: Protocol.Fetch.FulfillRequestRequest = {
+                requestId,
+                responseCode,
+              };
+              if (responseOptions) {
+                const keys = ['body', 'binaryResponseHeaders', 'responseHeaders', 'responsePhrase'];
+                Object.assign(fulfillOptions, pick(responseOptions, keys));
+                if (fulfillOptions.body) fulfillOptions.body = btoa(fulfillOptions.body);
+                if (responseOptions.encodedBody) fulfillOptions.body = responseOptions.encodedBody;
+              }
+              fulfill = async () => {
+                debug(`Fulfilling request ${requestId} with responseCode "${responseCode}"`);
+                await client.send('Fetch.fulfillRequest', fulfillOptions);
+              };
+            },
           };
-          newResponse = await this.eventHandlers.onResponseReceived({ response, request });
+
+          await this.eventHandlers.onInterception(event, control);
+          if (!shouldContinue) {
+            debug(`Aborting request ${requestId} with reason "${errorReason}"`);
+            await client.send('Fetch.failRequest', { requestId, errorReason });
+            return;
+          } else if (fulfill) {
+            await fulfill!();
+            return;
+          }
+        }
+
+        let newResponse = null;
+
+        if (this.eventHandlers.onResponseReceived) {
+          if (!event.responseStatusCode) {
+            debug(
+              `Warning: onResponseReceived handler passed but ${requestId} intercepted at Request stage. Handler can not be called.`,
+            );
+          } else if (event.responseStatusCode != 200) {
+             debug(
+               `Warning: onResponseReceived handler passed but status code of response was ${event.responseStatusCode}. Not handling response.`,
+             );
+          } else {
+            const responseCdp = (await client.send('Fetch.getResponseBody', {
+              requestId,
+            })) as Protocol.Fetch.GetResponseBodyResponse;
+            const response: Interceptor.InterceptedResponse = {
+              body: responseCdp.base64Encoded ? atob(responseCdp.body) : responseCdp.body,
+              headers: event.responseHeaders,
+              errorReason: event.responseErrorReason,
+              statusCode: event.responseStatusCode,
+            };
+            newResponse = await this.eventHandlers.onResponseReceived({ response, request });
+          }
+        }
+
+        if (newResponse) {
+          debug(`Fulfilling request ${requestId} with response returned from onResponseReceived`);
+          await client.send('Fetch.fulfillRequest', {
+            requestId,
+            responseCode: newResponse.statusCode,
+            responseHeaders: newResponse.headers,
+            body: newResponse.base64Body ? newResponse.base64Body : btoa(newResponse.body),
+            responsePhrase: newResponse.statusMessage,
+          }).catch(e => null);
+        } else {
+          await client.send('Fetch.continueRequest', { requestId });
         }
       }
 
-      if (newResponse) {
-        debug(`Fulfilling request ${requestId} with response returned from onResponseReceived`);
-        await client.send('Fetch.fulfillRequest', {
-          requestId,
-          responseCode: newResponse.statusCode,
-          responseHeaders: newResponse.headers,
-          body: newResponse.base64Body ? newResponse.base64Body : btoa(newResponse.body),
-          responsePhrase: newResponse.statusMessage,
-        }).catch(e => null);
-      } else {
-        await client.send('Fetch.continueRequest', { requestId });
-      }
+      execute().catch(e => console.error(e));
     });
   }
 }
